@@ -20,23 +20,23 @@ internal sealed class NvidiaGpu : GenericGpu
     private readonly Sensor[] _clocks;
     private readonly int _clockVersion;
     private readonly Sensor[] _controls;
-    private readonly string _d3dDeviceId;
+    private string _d3dDeviceId;
     private readonly NvApi.NvDisplayHandle? _displayHandle;
     private readonly Control[] _fanControls;
     private readonly Sensor[] _fans;
-    private readonly Sensor _gpuDedicatedMemoryUsage;
-    private readonly Sensor[] _gpuNodeUsage;
-    private readonly DateTime[] _gpuNodeUsagePrevTick;
-    private readonly long[] _gpuNodeUsagePrevValue;
-    private readonly Sensor _gpuSharedMemoryUsage;
+    private Sensor _gpuDedicatedMemoryUsage;
+    private Sensor[] _gpuNodeUsage;
+    private DateTime[] _gpuNodeUsagePrevTick;
+    private long[] _gpuNodeUsagePrevValue;
+    private Sensor _gpuSharedMemoryUsage;
     private readonly NvApi.NvPhysicalGpuHandle _handle;
     private readonly Sensor _hotSpotTemperature;
     private readonly Sensor[] _loads;
-    private readonly Sensor _memoryFree;
+    private Sensor _memoryFree;
     private readonly Sensor _memoryJunctionTemperature;
-    private readonly Sensor _memoryTotal;
-    private readonly Sensor _memoryUsed;
-    private readonly Sensor _memoryLoad;
+    private Sensor _memoryTotal;
+    private Sensor _memoryUsed;
+    private Sensor _memoryLoad;
     private readonly NvidiaML.NvmlDevice? _nvmlDevice;
     private readonly Sensor _pcieThroughputRx;
     private readonly Sensor _pcieThroughputTx;
@@ -50,6 +50,9 @@ internal sealed class NvidiaGpu : GenericGpu
     private readonly Sensor[] _12VHPwrPinPowerSensors;
     private readonly Sensor _12VHPwrConnectorPowerSensor;
     private readonly Sensor _12VHPwrConnectorCurrentSensor;
+    private Sensor _wddmTemperature;
+    private Sensor _wddmLoad;
+    private Sensor _wddmFan;
 
     // ASUS Astral subsystem IDs for 12VHPwr pin monitoring
     private static readonly uint[] AstralSubSystemIds =
@@ -71,6 +74,12 @@ internal sealed class NvidiaGpu : GenericGpu
         _displayHandle = displayHandle;
 
         bool hasBusId = NvApi.NvAPI_GPU_GetBusId(handle, out uint busId) == NvApi.NvStatus.OK;
+
+        if (InitializeWddmSensors(settings, hasBusId, busId))
+        {
+            Update();
+            return;
+        }
 
         // Thermal settings.
         NvApi.NvThermalSettings thermalSettings = GetThermalSettings(out NvApi.NvStatus status);
@@ -504,6 +513,104 @@ internal sealed class NvidiaGpu : GenericGpu
         Update();
     }
 
+    private bool InitializeWddmSensors(ISettings settings, bool hasBusId, uint busId)
+    {
+        if (!TryFindD3dDeviceId(hasBusId, busId, out string deviceId) ||
+            !D3DDisplayDevice.GetDeviceInfoByIdentifier(deviceId, out D3DDisplayDevice.D3DDeviceInfo deviceInfo))
+        {
+            return false;
+        }
+
+        _d3dDeviceId = deviceId;
+
+        _wddmTemperature = new Sensor("GPU Core", 0, SensorType.Temperature, this, settings);
+        _wddmLoad = new Sensor("GPU Core", 0, SensorType.Load, this, settings);
+        _wddmFan = new Sensor("GPU Fan", 0, SensorType.Fan, this, settings);
+        _memoryFree = new Sensor("GPU Memory Free", 0, SensorType.SmallData, this, settings);
+        _memoryUsed = new Sensor("GPU Memory Used", 1, SensorType.SmallData, this, settings);
+        _memoryTotal = new Sensor("GPU Memory Total", 2, SensorType.SmallData, this, settings);
+        _memoryLoad = new Sensor("GPU Memory", 3, SensorType.Load, this, settings);
+
+        _gpuDedicatedMemoryUsage = new Sensor("D3D Dedicated Memory Used", 4, SensorType.SmallData, this, settings);
+        _gpuSharedMemoryUsage = new Sensor("D3D Shared Memory Used", 5, SensorType.SmallData, this, settings);
+
+        _gpuNodeUsage = new Sensor[deviceInfo.Nodes.Length];
+        _gpuNodeUsagePrevValue = new long[deviceInfo.Nodes.Length];
+        _gpuNodeUsagePrevTick = new DateTime[deviceInfo.Nodes.Length];
+
+        int loadSensorIndex = 1;
+        foreach (D3DDisplayDevice.D3DDeviceNodeInfo node in deviceInfo.Nodes.OrderBy(x => x.Name))
+        {
+            _gpuNodeUsage[node.Id] = new Sensor(node.Name, loadSensorIndex++, SensorType.Load, this, settings);
+            _gpuNodeUsagePrevValue[node.Id] = node.RunningTime;
+            _gpuNodeUsagePrevTick[node.Id] = node.QueryTime;
+        }
+
+        return true;
+    }
+
+    private bool TryFindD3dDeviceId(bool hasBusId, uint busId, out string deviceId)
+    {
+        deviceId = null;
+
+        string[] deviceIds = D3DDisplayDevice.GetDeviceIdentifiers();
+        if (deviceIds == null)
+            return false;
+
+        string[] nvidiaDeviceIds = deviceIds
+                                   .Where(id => id.IndexOf("VEN_10DE", StringComparison.OrdinalIgnoreCase) != -1)
+                                   .ToArray();
+
+        if (hasBusId)
+        {
+            foreach (string candidate in nvidiaDeviceIds)
+            {
+                if (TryGetDeviceBus(candidate, out uint candidateBusId) && candidateBusId == busId)
+                {
+                    deviceId = candidate;
+                    return true;
+                }
+            }
+        }
+
+        if (_adapterIndex >= 0 && _adapterIndex < nvidiaDeviceIds.Length)
+        {
+            deviceId = nvidiaDeviceIds[_adapterIndex];
+            return true;
+        }
+
+        deviceId = nvidiaDeviceIds.FirstOrDefault();
+        return deviceId != null;
+    }
+
+    private static bool TryGetDeviceBus(string deviceId, out uint busId)
+    {
+        busId = 0;
+
+        try
+        {
+            string path = @"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Enum\" + D3DDisplayDevice.GetActualDeviceIdentifier(deviceId);
+
+            if (Registry.GetValue(path, "LocationInformation", null) is not string locationInformation)
+                return false;
+
+            int index = locationInformation.IndexOf('(');
+            if (index == -1)
+                return false;
+
+            index++;
+            int secondIndex = locationInformation.IndexOf(',', index);
+            if (secondIndex == -1)
+                return false;
+
+            return uint.TryParse(locationInformation.Substring(index, secondIndex - index), out busId);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     /// <inheritdoc />
     public override string DeviceId
     {
@@ -522,6 +629,9 @@ internal sealed class NvidiaGpu : GenericGpu
     {
         if (_d3dDeviceId != null && D3DDisplayDevice.GetDeviceInfoByIdentifier(_d3dDeviceId, out D3DDisplayDevice.D3DDeviceInfo deviceInfo))
         {
+            if (_wddmLoad != null)
+                _wddmLoad.Value = null;
+
             _gpuDedicatedMemoryUsage.Value = 1f * deviceInfo.GpuDedicatedUsed / 1024 / 1024;
             _gpuSharedMemoryUsage.Value = 1f * deviceInfo.GpuSharedUsed / 1024 / 1024;
             ActivateSensor(_gpuDedicatedMemoryUsage);
@@ -532,12 +642,47 @@ internal sealed class NvidiaGpu : GenericGpu
                 long runningTimeDiff = node.RunningTime - _gpuNodeUsagePrevValue[node.Id];
                 long timeDiff = node.QueryTime.Ticks - _gpuNodeUsagePrevTick[node.Id].Ticks;
 
-                _gpuNodeUsage[node.Id].Value = 100f * runningTimeDiff / timeDiff;
+                float nodeUsage = 100f * runningTimeDiff / timeDiff;
+                _gpuNodeUsage[node.Id].Value = nodeUsage;
                 _gpuNodeUsagePrevValue[node.Id] = node.RunningTime;
                 _gpuNodeUsagePrevTick[node.Id] = node.QueryTime;
                 ActivateSensor(_gpuNodeUsage[node.Id]);
+
+                if (_wddmLoad != null && (_wddmLoad.Value == null || nodeUsage > _wddmLoad.Value))
+                    _wddmLoad.Value = nodeUsage;
+            }
+
+            if (_wddmTemperature != null && _wddmLoad != null)
+            {
+                if (deviceInfo.Temperature > 0)
+                {
+                    _wddmTemperature.Value = deviceInfo.Temperature / 10f;
+                    ActivateSensor(_wddmTemperature);
+                }
+
+                if (deviceInfo.FanRpm > 0)
+                {
+                    _wddmFan.Value = deviceInfo.FanRpm;
+                    ActivateSensor(_wddmFan);
+                }
+
+                float dedicatedTotal = 1f * deviceInfo.GpuVideoMemoryLimit / 1024 / 1024;
+                float dedicatedUsed = 1f * deviceInfo.GpuDedicatedUsed / 1024 / 1024;
+                _memoryTotal.Value = dedicatedTotal;
+                _memoryUsed.Value = dedicatedUsed;
+                _memoryFree.Value = Math.Max(0, dedicatedTotal - dedicatedUsed);
+                _memoryLoad.Value = dedicatedTotal > 0 ? dedicatedUsed / dedicatedTotal * 100 : null;
+
+                ActivateSensor(_wddmLoad);
+                ActivateSensor(_memoryTotal);
+                ActivateSensor(_memoryUsed);
+                ActivateSensor(_memoryFree);
+                ActivateSensor(_memoryLoad);
             }
         }
+
+        if (_wddmTemperature != null && _wddmLoad != null)
+            return;
 
         NvApi.NvStatus status;
 

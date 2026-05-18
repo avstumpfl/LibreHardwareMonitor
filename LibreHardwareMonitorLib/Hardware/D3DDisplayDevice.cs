@@ -108,6 +108,17 @@ internal static class D3DDisplayDevice
         if (status != NTSTATUS.STATUS_SUCCESS)
             return false;
 
+        GetAdapterPerfData(out status, adapter, out D3DKMT_ADAPTER_PERFDATA adapterPerfData);
+        if (status == NTSTATUS.STATUS_SUCCESS)
+        {
+            deviceInfo.Temperature = adapterPerfData.Temperature;
+            deviceInfo.FanRpm = adapterPerfData.FanRPM;
+            deviceInfo.Power = adapterPerfData.Power;
+            deviceInfo.MemoryFrequency = adapterPerfData.MemoryFrequency;
+            deviceInfo.MemoryBandwidth = adapterPerfData.MemoryBandwidth;
+            deviceInfo.PcieBandwidth = adapterPerfData.PCIEBandwidth;
+        }
+
         deviceInfo.GpuSharedLimit = segmentSizeInfo.SharedSystemMemorySize;
         deviceInfo.GpuVideoMemoryLimit = segmentSizeInfo.DedicatedVideoMemorySize;
         deviceInfo.GpuDedicatedLimit = segmentSizeInfo.DedicatedSystemMemorySize;
@@ -188,6 +199,26 @@ internal static class D3DDisplayDevice
         status = Windows.Wdk.PInvoke.D3DKMTQueryAdapterInfo(ref queryAdapterInfo);
         sizeInformation = *(D3DKMT_SEGMENTSIZEINFO*)segmentSizePtr;
         Marshal.FreeHGlobal(segmentSizePtr);
+    }
+
+    private static unsafe void GetAdapterPerfData(out NTSTATUS status, D3DKMT_OPENADAPTERFROMDEVICENAME adapter, out D3DKMT_ADAPTER_PERFDATA adapterPerfDataResult)
+    {
+        IntPtr adapterPerfDataPtr = Marshal.AllocHGlobal(sizeof(D3DKMT_ADAPTER_PERFDATA));
+
+        D3DKMT_ADAPTER_PERFDATA* pData = (D3DKMT_ADAPTER_PERFDATA*)adapterPerfDataPtr;
+        pData->PhysicalAdapterIndex = 0;
+
+        var queryAdapterInfo = new D3DKMT_QUERYADAPTERINFO
+        {
+            hAdapter = adapter.hAdapter,
+            Type = KMTQUERYADAPTERINFOTYPE.KMTQAITYPE_ADAPTERPERFDATA,
+            pPrivateDriverData = (void*)adapterPerfDataPtr,
+            PrivateDriverDataSize = (uint)sizeof(D3DKMT_ADAPTER_PERFDATA)
+        };
+
+        status = Windows.Wdk.PInvoke.D3DKMTQueryAdapterInfo(ref queryAdapterInfo);
+        adapterPerfDataResult = *(D3DKMT_ADAPTER_PERFDATA*)adapterPerfDataPtr;
+        Marshal.FreeHGlobal(adapterPerfDataPtr);
     }
 
     private static unsafe void GetNodeMetaData(out NTSTATUS status, D3DKMT_OPENADAPTERFROMDEVICENAME adapter, uint nodeId, out D3DKMT_NODEMETADATA nodeMetaDataResult)
@@ -302,6 +333,13 @@ internal static class D3DDisplayDevice
 
         public ulong GpuSharedMax;
         public ulong GpuDedicatedMax;
+
+        public uint Temperature;
+        public uint FanRpm;
+        public uint Power;
+        public ulong MemoryFrequency;
+        public ulong MemoryBandwidth;
+        public ulong PcieBandwidth;
 
         public D3DDeviceNodeInfo[] Nodes;
         public bool Integrated;
