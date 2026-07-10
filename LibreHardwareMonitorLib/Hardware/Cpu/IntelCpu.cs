@@ -239,8 +239,13 @@ internal sealed class IntelCpu : GenericCpu
                             _microArchitecture = MicroArchitecture.LunarLake;
                             tjMax = GetTjMaxFromMsr();
                             break;
-                        case 0x8F: // Intel Xeon W5-3435X // SapphireRapids 
+                        case 0x8F: // Sapphire Rapids
                             _microArchitecture = MicroArchitecture.SapphireRapids;
+                            tjMax = GetTjMaxFromMsr();
+                            break;
+
+                        case 0xCF: // Emerald Rapids
+                            _microArchitecture = MicroArchitecture.EmeraldRapids;
                             tjMax = GetTjMaxFromMsr();
                             break;
                         case 0x96: // Intel Celeron ElkhartLake 
@@ -314,6 +319,7 @@ internal sealed class IntelCpu : GenericCpu
             case MicroArchitecture.Silvermont:
             case MicroArchitecture.Skylake:
             case MicroArchitecture.TigerLake:
+            case MicroArchitecture.EmeraldRapids:
             case MicroArchitecture.SapphireRapids:
             case MicroArchitecture.ElkhartLake:
             case MicroArchitecture.Tremont:
@@ -458,6 +464,7 @@ internal sealed class IntelCpu : GenericCpu
             MicroArchitecture.Silvermont or
             MicroArchitecture.Skylake or
             MicroArchitecture.TigerLake or
+            MicroArchitecture.EmeraldRapids or
             MicroArchitecture.SapphireRapids or
             MicroArchitecture.ElkhartLake or
             MicroArchitecture.Tremont)
@@ -653,6 +660,7 @@ internal sealed class IntelCpu : GenericCpu
                         case MicroArchitecture.Silvermont:
                         case MicroArchitecture.Skylake:
                         case MicroArchitecture.TigerLake:
+                        case MicroArchitecture.EmeraldRapids:
                         case MicroArchitecture.SapphireRapids:
                         case MicroArchitecture.ElkhartLake:
                         case MicroArchitecture.Tremont:
@@ -729,6 +737,7 @@ internal sealed class IntelCpu : GenericCpu
         CannonLake,
         CometLake,
         Core,
+        EmeraldRapids,
         Goldmont,
         GoldmontPlus,
         Haswell,
